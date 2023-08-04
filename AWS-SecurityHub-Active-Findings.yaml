@@ -1,0 +1,386 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Creates a lambda that gets triggered by certain SecurityHub Findings via EventBridge. The lambda formats SecurityHub findings json code into a more readable format and notifies via SNS. It also updates notified findings so that no duplicate tickets are raised."
+
+Parameters:
+
+  SecurityHubLambda:
+    Type: String
+    Default: "Your Lambda name."
+
+  SecurityHubSNSTopicTeam1:
+    Type: String
+    Default: "Your SNS name for Team 1."
+
+  SecurityHubSNSTopicTeam2:
+    Type: String
+    Default: "Your SNS name for Team 2."
+
+  SecurityHubSNSTopicTeam3:
+    Type: String
+    Default: "Your SNS name for Team 3."
+
+  SecurityHubSNSTopicTeam4:
+    Type: String
+    Default: "Your SNS name for Team 4."
+
+  SecurityHubSNSTopicTeam5:
+    Type: String
+    Default: "Your SNS name for Team 5."
+
+  SecurityHubSNSSubscriptionTeam1:
+    Type: String
+    Default: "Team 1 email here"
+
+  SecurityHubSNSSubscriptionTeam2:
+    Type: String
+    Default: "Team 2 email here"
+
+  SecurityHubSNSSubscriptionTeam3:
+    Type: String
+    Default: "Team 3 email here"
+
+  SecurityHubSNSSubscriptionTeam4:
+    Type: String
+    Default: "Team 4 email here"
+
+  SecurityHubSNSSubscriptionTeam5:
+    Type: String
+    Default: "Team 5 email here"
+
+  SecurityHubEventBridge:
+    Type: String
+    Default: "EventBridge rule name here"
+
+  SecurityHubIAMRole:
+    Type: String
+    Default: "IAM role name here"
+
+  SecurityHubCloudWatchGroup:
+    Type: String
+    Default: /aws/lambda
+
+Resources:
+  
+  SnsTopicTeam1:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref SecurityHubSNSSubscriptionTeam1
+          Protocol: "email"
+      TopicName: !Ref SecurityHubSNSTopicTeam1
+
+  SnsTopicTeam2:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref SecurityHubSNSSubscriptionTeam2
+          Protocol: "email"
+      TopicName: !Ref SecurityHubSNSTopicTeam2
+
+  SnsTopicTeam3:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref SecurityHubSNSSubscriptionTeam3
+          Protocol: "email"
+      TopicName: !Ref SecurityHubSNSTopicTeam3
+
+  SnsTopicTeam4:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref SecurityHubSNSSubscriptionTeam4
+          Protocol: "email"
+      TopicName: !Ref SecurityHubSNSTopicTeam4
+
+  SnsTopicTeam5:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref SecurityHubSNSSubscriptionTeam5
+          Protocol: "email"
+      TopicName: !Ref SecurityHubSNSTopicTeam5
+
+  IAMLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref SecurityHubIAMRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: 'lambda.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AWSSecurityHubFullAccess'
+      Policies:
+      - PolicyName: SecurityHub-Active-Findings-LambdaBasicExecutionRole
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action: "logs:CreateLogGroup"
+            Resource: "arn:aws:logs:*:*:*"
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource:
+              - !Sub 'arn:aws:logs:*:*:log-group:${SecurityHubCloudWatchGroup}/${SecurityHubLambda}:*'
+      - PolicyName: SecurityHub-Active-Findings-SNS-Publish
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - "sns:Publish"
+            Resource: "arn:aws:sns:*:*:*"
+
+  LambdaSecurityHubFindings:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Ref SecurityHubLambda
+      Description: "AWS function used to generate SecurityHub findings reports in S3 bucket. The report collects all data from SecurityHub"
+      Code:
+        ZipFile:
+          !Sub |
+          # Documentation and original function example: https://aws.amazon.com/premiumsupport/knowledge-center/sns-email-notifications-eventbridge/
+
+          import json
+          import boto3
+          import os
+
+          sns = boto3.client('sns')
+          sh_client = boto3.client("securityhub")
+
+          def lambda_handler(event, context):
+              
+              #Extract details from JSON event
+              detailType= event["detail-type"]
+              region = event["region"]
+              accountId = event["account"] 
+              finding = event["detail"]["findings"][0]
+              findingTitle = finding["Title"] 
+              findingTime = finding["FirstObservedAt"]
+              findingType = finding["Types"][0]
+              findingDescription = finding["Description"]        
+              complianceStatus = finding["Compliance"]["Status"]
+              severity = finding["Severity"]["Label"]
+              findingType = finding["Types"][0]
+              findingDescription = finding["Description"]
+              findingTime = finding["FirstObservedAt"]
+              remediation = finding["Remediation"]["Recommendation"]["Text"]
+              remediationUrl = finding["Remediation"]["Recommendation"]["Url"]
+              ResourceDetails = finding["Resources"]
+              AWSId = finding["AwsAccountId"]
+              # SecurityHub findings auto acknowledge
+              Id = finding["Id"]
+              ProductArn = finding["ProductArn"]
+              # Date transformation - This requires more work to work properly
+              CreatedAt = finding["CreatedAt"]
+              CreatedAt_temp = CreatedAt.replace("-","")
+              CreatedAt_str = CreatedAt_temp[0:8]
+              CreatedAt_int = int(CreatedAt_str)
+              UpdatedAt = finding["UpdatedAt"]
+              UpdatedAt_temp = UpdatedAt.replace("-","")
+              UpdatedAt_str = UpdatedAt_temp[0:8]
+              UpdatedAt_int = int(UpdatedAt_str)
+              DateDifference = UpdatedAt_int - CreatedAt_int
+              
+
+              # Alerts for TEAM1
+              if  (
+                  # CRITICAL - CIS AWS Foundations Benchmark v1.4.0
+                  findingTitle == "3.3 Ensure the S3 bucket used to store CloudTrail logs is not publicly accessible" or 
+                  findingTitle == "1.6 Ensure hardware MFA is enabled for the \'root\' user account" or
+
+                  # CRITICAL - AWS Foundational Security Best Practices v1.0.0
+
+                  # HIGH - CIS AWS Foundations Benchmark v1.4.0
+                  # HIGH - AWS Foundational Security Best Practices v1.0.0
+
+                  # MEDIUM - CIS AWS Foundations Benchmark v1.4.0
+
+                  # MEDIUM - AWS Foundational Security Best Practices v1.0.0
+                  (findingTitle == "EC2.22 Unused EC2 security groups should be removed" and DateDifference > 5 ) or 
+
+                  # LOW - CIS AWS Foundations Benchmark v1.4.0
+
+                  # LOW - AWS Foundational Security Best Practices v1.0.0
+                  findingTitle == "EC2.16 Unused Network Access Control Lists should be removed"
+                  
+                  ):
+
+                  message = "Alert: %s in %s for account: %s\n\n Title: [%s]\n\n Compliance Status: [%s]\n Severity: %s\n AWS Account Id: %s \n\n Notification Delay (in days): %s \n\n Finding regarding: %s\n Description: %s\n First observed at: %s\n\n Resource Details: %s\n\n %s: %s" % (detailType, region, accountId, findingTitle, complianceStatus, severity, AWSId, DateDifference, findingType, findingDescription, findingTime, ResourceDetails, remediation, remediationUrl)
+              
+                  response = sns.publish(
+                          TopicArn = os.environ ['SnsTopicTeam1Arn'] ,
+                          Message = message
+                          )
+                  responsestatus = sh_client.batch_update_findings(
+                      FindingIdentifiers=[
+                      {
+                          'Id': Id,
+                          'ProductArn': ProductArn
+                      },
+                      ],
+                      Workflow={
+                          'Status': 'NOTIFIED'
+                      }
+                  )
+              
+              # Alerts for TEAM2
+              if  (
+                  # CRITICAL
+                  findingTitle == "DMS.1 Database Migration Service replication instances should not be public" or
+                  # HIGH
+                  # MEDIUM
+                  (findingTitle == "RDS.9 Database logging should be enabled" and AWSId != "AWSAccountIDXXXXXXXXX" and DateDifference > 1 ) or
+                  (findingTitle == "RDS.3 RDS DB instances should have encryption at-rest enabled" and ( AWSId == "AWSAccountIDXXXXXXXXX" or AWSId == "AWSAccountIDXXXXXXXXX" or AWSId == "AWSAccountIDXXXXXXXXX" or AWSId == "AWSAccountIDXXXXXXXXX" or AWSId == "AWSAccountIDXXXXXXXXX" ) and DateDifference > 2 ) or
+                  # LOW    
+                  (findingTitle == "RDS.5 RDS DB instances should be configured with multiple Availability Zones" and ( AWSId == "AWSAccountIDXXXXXXXXX" or AWSId == "AWSAccountIDXXXXXXXXX" or AWSId == "AWSAccountIDXXXXXXXXX" ) and ( 'arn:aws:xxx:xxx-xxx-xxx:AWSAccountIDXXXXXXXXX:xxx:resource_name' not in ResourceDetails ) and DateDifference > 1 ) or
+                  (findingTitle == "RDS.16 RDS DB clusters should be configured to copy tags to snapshots" and DateDifference > 1 ) 
+                  ):
+
+                  message = "Alert: %s in %s for account: %s\n\n Title: [%s]\n\n Compliance Status: [%s]\n Severity: %s\n AWS Account Id: %s \n\n Notification Delay (in days): %s \n\n Finding regarding: %s\n Description: %s\n First observed at: %s\n\n Resource Details: %s\n\n %s: %s" % (detailType, region, accountId, findingTitle, complianceStatus, severity, AWSId, DateDifference, findingType, findingDescription, findingTime, ResourceDetails, remediation, remediationUrl)
+                  
+                  response = sns.publish(
+                          TopicArn = os.environ ['SnsTopicTeam2Arn'] ,
+                          Message = message
+                          )
+                  responsestatus = sh_client.batch_update_findings(
+                      FindingIdentifiers=[
+                      {
+                          'Id': Id,
+                          'ProductArn': ProductArn
+                      },
+                      ],
+                      Workflow={
+                          'Status': 'NOTIFIED'
+                      }
+                  )
+
+              # Alerts for TEAM3 - Autowave
+              if  (
+                  # CRITICAL
+
+                  # HIGH
+                  
+                  # MEDIUM - CIS AWS Foundations Benchmark v1.4.0
+                  (findingTitle == "1.14 Ensure access keys are rotated every 90 days or less" and AWSId != "AWSAccountIDXXXXXXXXX" ) or 
+                  
+                  # MEDIUM - AWS Foundational Security Best Practices v1.0.0
+                  (findingTitle == "IAM.3 IAM users' access keys should be rotated every 90 days or less" and AWSId != "AWSAccountIDXXXXXXXXX" ) or 
+                  (findingTitle == "IAM.8 Unused IAM user credentials should be removed" and AWSId != "AWSAccountIDXXXXXXXXX" ) 
+                  
+                  # LOW
+
+                  ):
+                  
+                  message = "%s" % (event)
+
+                  response = sns.publish(
+                          TopicArn = os.environ ['SnsTopicTeam3Arn'] ,
+                          Message = message
+                          )
+                  responsestatus = sh_client.batch_update_findings(
+                      FindingIdentifiers=[
+                      {
+                          'Id': Id,
+                          'ProductArn': ProductArn
+                      },
+                      ],
+                      Workflow={
+                          'Status': 'SUPPRESSED'
+                      }
+                  )
+
+              # Alerts for TEAM4
+              if  (
+                  # CRITICAL
+                  # HIGH
+                  # MEDIUM - CIS AWS Foundations Benchmark v1.4.0
+                  findingTitle == "1.10 Ensure multi-factor authentication (MFA) is enabled for all IAM users that have a console password" or
+                  # MEDIUM - AWS Foundational Security Best Practices v1.0.0
+                  findingTitle == "IAM.5 MFA should be enabled for all IAM users that have a console password"
+                  # LOW
+                  ):
+                  
+                  message = "Alert: %s in %s for account: %s\n\n Title: [%s]\n\n Compliance Status: [%s]\n Severity: %s\n AWS Account Id: %s \n\n Notification Delay (in days): %s \n\n Finding regarding: %s\n Description: %s\n First observed at: %s\n\n Resource Details: %s\n\n %s: %s" % (detailType, region, accountId, findingTitle, complianceStatus, severity, AWSId, DateDifference, findingType, findingDescription, findingTime, ResourceDetails, remediation, remediationUrl)
+                  
+                  response = sns.publish(
+                          TopicArn = os.environ ['SnsTopicTeam4Arn'] ,
+                          Message = message
+                          )
+                  responsestatus = sh_client.batch_update_findings(
+                      FindingIdentifiers=[
+                      {
+                          'Id': Id,
+                          'ProductArn': ProductArn
+                      },
+                      ],
+                      Workflow={
+                          'Status': 'NOTIFIED'
+                      }
+                  )
+
+              return {
+                'statusCode': 200,
+                'body': json.dumps('Success!')
+          }
+      Handler: "index.lambda_handler"
+      Environment:
+       Variables:
+          SnsTopicTeam1Arn: !Ref SnsTopicTeam1
+          SnsTopicTeam2Arn: !Ref SnsTopicTeam2
+          SnsTopicTeam3Arn: !Ref SnsTopicTeam3
+          SnsTopicTeam4Arn: !Ref SnsTopicTeam4
+          SnsTopicTeam5Arn: !Ref SnsTopicTeam5
+      MemorySize: 512
+      Role: 
+        Fn::GetAtt:
+        - IAMLambdaRole
+        - Arn
+      Runtime: "python3.9"
+      Timeout: 3
+
+  SecurityHubFindingsRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Ref SecurityHubEventBridge
+      Description: "Triggers lambda function on a schedule to create Amazon SecurityHub reports"
+      EventBusName: default
+      State: "ENABLED"
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Security Hub Findings - Imported
+        detail:
+          findings:
+            RecordState:
+              - ACTIVE
+            Workflow:
+              Status:
+                - NEW
+            ProductName:
+              - Security Hub
+      Targets:
+        - Arn:
+            Fn::GetAtt:
+            - LambdaSecurityHubFindings
+            - Arn
+          Id: "SecurityHubLambdaTarget"
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref "LambdaSecurityHubFindings"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+        - SecurityHubFindingsRule
+        - Arn
